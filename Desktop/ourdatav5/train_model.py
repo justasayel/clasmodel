@@ -6,6 +6,7 @@ Run: python train_model.py
 
 import os
 import torch
+import traceback
 from transformers import (
     AutoModelForCausalLM, 
     AutoTokenizer,
@@ -63,32 +64,75 @@ print(f"  ✓ Test samples: {len(dataset['test'])}")
 # ============ LOAD MODEL & TOKENIZER ============
 print(f"\n🤖 Loading {MODEL_NAME}...")
 
-# Use 8-bit quantization to reduce memory
-quantization_config = BitsAndBytesConfig(
-    load_in_8bit=True,
-    llm_int8_threshold=6.0,
-)
-
 try:
-    model = AutoModelForCausalLM.from_pretrained(
-        MODEL_NAME,
-        torch_dtype=torch.float16 if torch.cuda.is_available() else torch.float32,
-        device_map="auto" if torch.cuda.is_available() else None,
-        quantization_config=quantization_config if torch.cuda.is_available() else None,
-        trust_remote_code=True
-    )
+    # Load tokenizer first
+    print("  Loading tokenizer...")
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, trust_remote_code=True)
-    
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
+    print("  ✓ Tokenizer loaded")
     
-    print("  ✓ Model loaded successfully")
+    # Then load model with fallback strategy
+    if torch.cuda.is_available():
+        print("  GPU detected - loading model with 8-bit quantization...")
+        model = None
+        
+        # Try 1: With 8-bit quantization (most memory efficient)
+        try:
+            quantization_config = BitsAndBytesConfig(
+                load_in_8bit=True,
+                llm_int8_threshold=6.0,
+            )
+            model = AutoModelForCausalLM.from_pretrained(
+                MODEL_NAME,
+                torch_dtype=torch.float16,
+                device_map="auto",
+                quantization_config=quantization_config,
+                trust_remote_code=True
+            )
+            print("  ✓ Loaded with 8-bit quantization")
+        except Exception as e1:
+            print(f"  ⚠️  Quantization failed, trying without...")
+            
+            # Try 2: Without quantization
+            try:
+                model = AutoModelForCausalLM.from_pretrained(
+                    MODEL_NAME,
+                    torch_dtype=torch.float16,
+                    device_map="auto",
+                    trust_remote_code=True
+                )
+                print("  ✓ Loaded without quantization")
+            except Exception as e2:
+                print(f"  ⚠️  Float16 failed, trying float32...")
+                
+                # Try 3: Float32 fallback
+                model = AutoModelForCausalLM.from_pretrained(
+                    MODEL_NAME,
+                    torch_dtype=torch.float32,
+                    device_map="auto",
+                    trust_remote_code=True
+                )
+                print("  ✓ Loaded with float32")
+    else:
+        print("  No GPU detected - loading on CPU...")
+        model = AutoModelForCausalLM.from_pretrained(
+            MODEL_NAME,
+            torch_dtype=torch.float32,
+            trust_remote_code=True
+        )
+    
+    print(f"  ✓ Model loaded successfully!")
+    
 except Exception as e:
-    print(f"  ❌ Error loading model: {e}")
-    print(f"  💡 Make sure you have:")
-    print(f"     - Sufficient disk space (15GB+)")
-    print(f"     - Internet connection")
-    print(f"     - Hugging Face transformers installed")
+    print(f"  ❌ Error loading model!")
+    print(f"\n  Error: {str(e)[:200]}")
+    traceback.print_exc()
+    print(f"\n  💡 Troubleshooting for Colab:")
+    print(f"     1. Install: !pip install --upgrade transformers torch")
+    print(f"     2. Restart runtime: Runtime → Restart runtime")
+    print(f"     3. Clear cache: !rm -rf ~/.cache/huggingface/transformers")
+    print(f"     4. Try again")
     exit(1)
 
 # ============ PREPARE DATA ============
